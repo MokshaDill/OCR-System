@@ -43,6 +43,15 @@ class ExtractionResult:
 # ------------------------- PDF to Images -------------------------
 
 
+__all__ = [
+    "collect_pdfs_in_folder",
+    "ocr_pdf_to_text",
+    "append_rows_csv",
+    "generate_smart_patterns",
+    "bulk_extract",
+    "generate_window_patterns",
+    "bulk_extract_licenses",
+]
 def convert_pdf_to_images(
     pdf_path: str | Path,
     dpi: int = 300,
@@ -378,11 +387,11 @@ def infer_token_shape(sample_text: str) -> str:
 
 # ------------------------- License Patterns (Type A & B) -------------------------
 
-# Type A: Letters + number + bracketed token
-# - Allow multiple spaces
-# - Allow hyphens, slashes and spaces inside brackets
-# - Allow slightly longer lengths to accommodate OCR noise
-LICENSE_TYPE_A = r"\bB\s\d{5}\(R[0-9O]\)\b" ##\b[A-Z]{1,4}\s*\d{1,9}\s*\(\s*[A-Z0-9/\-\s]{1,20}\s*\)\b
+# Type A: Letters + number + bracketed token (e.g., B 17260(RO05))
+# - 1-4 leading letters (department code)
+# - 1-9 digits (license number)
+# - Bracketed token 1-20 chars allowing A-Z, 0-9, /, -, space; OCR O/0 confusion handled in normalize
+LICENSE_TYPE_A = r"\b[A-Z]{1,5}[ \-/]*\d{1,10}[ \t]*\(\s*[A-Z0-9/\-\s]{1,24}\s*\)"
 # Type B: number/number with REQUIRED trailing R+digits (exclude plain dates)
 LICENSE_TYPE_B = r"\b\d{1,6}/\d{1,6}\s*R\d+\b"
 

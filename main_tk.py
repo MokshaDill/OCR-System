@@ -36,6 +36,7 @@ def resource_path(relative_path: str) -> str:
 
 def guess_tesseract_path() -> str:
     candidates = [
+        resource_path(os.path.join("tesseract", "tesseract.exe")),
         os.environ.get("TESSERACT_CMD", ""),
         r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
         r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
@@ -113,9 +114,36 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
+        # Set window icon from PNG (resource-aware). Fallback silently if missing.
+        try:
+            icon_path = resource_path("8005785.png")
+            if os.path.isfile(icon_path):
+                self.icon_img = tk.PhotoImage(file=icon_path)
+                self.iconphoto(True, self.icon_img)
+        except Exception:
+            pass
 
         self.in_folder_var = tk.StringVar(value="")
         self.out_file_var = tk.StringVar(value="")
+        # Configure bundled runtimes if present
+        try:
+            bundled_tess = resource_path(os.path.join("tesseract", "tesseract.exe"))
+            if os.path.isfile(bundled_tess):
+                os.environ["TESSERACT_CMD"] = bundled_tess
+                tessdata_path = resource_path(os.path.join("tesseract", "tessdata"))
+                if os.path.isdir(tessdata_path):
+                    os.environ["TESSDATA_PREFIX"] = tessdata_path
+                # Ensure PATH includes bundled dir
+                os.environ["PATH"] = os.path.dirname(bundled_tess) + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+        try:
+            bundled_poppler = guess_poppler_bin()
+            if bundled_poppler:
+                os.environ["POPPLER_BIN"] = bundled_poppler
+                os.environ["PATH"] = bundled_poppler + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
         self.tess_path_var = tk.StringVar(value=guess_tesseract_path())
         self.poppler_var = tk.StringVar(value=guess_poppler_bin())
 
@@ -128,6 +156,9 @@ class App(tk.Tk):
         self.license_context = ""
         self.date_context = ""
         self.ref_context = ""
+
+        # Persisted selection patterns for final extract
+        self.field_to_patterns: Dict[str, List[str]] = {}
 
         self._build_widgets()
 
@@ -164,28 +195,27 @@ class App(tk.Tk):
         self.viewer_frame.grid_rowconfigure(1, weight=1)
         self.viewer_frame.grid_columnconfigure(1, weight=1)
 
-        # Extract controls (second step): open a dialog to define fields by selection
-        tk.Button(self, text="Open Extractor", command=self._open_extractor).grid(row=6, column=0, sticky="w", **pad)
+        # Step controls
+        tk.Button(self, text="Process All", command=lambda: self._run(run_all=True), bg="#0078D4", fg="white").grid(row=6, column=0, sticky="w", **pad)
+        tk.Button(self, text="Select Fields (First PDF)", command=self._open_extractor).grid(row=6, column=1, sticky="w", **pad)
+        tk.Button(self, text="Final Extract", command=self._final_extract, bg="#0E7C86", fg="white").grid(row=6, column=2, sticky="e", **pad)
 
-        # Controls
-        tk.Button(self, text="Process First PDF", command=lambda: self._run(run_all=False)).grid(row=7, column=0, sticky="w", **pad)
-        tk.Button(self, text="Process All", command=lambda: self._run(run_all=True), bg="#0078D4", fg="white").grid(row=7, column=2, sticky="w", **pad)
-        tk.Button(self, text="Exit", command=self.destroy).grid(row=7, column=3, sticky="w", **pad)
+        # Legacy controls removed (simplified flow)
 
         # Progress
         self.status_var = tk.StringVar(value="Idle")
         tk.Label(self, textvariable=self.status_var, anchor="w").grid(row=8, column=0, columnspan=2, sticky="w", **pad)
-        self.progress = ttk.Progressbar(self, orient="horizontal", length=400, mode="determinate")
-        self.progress.grid(row=8, column=2, sticky="e", **pad)
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=300, mode="determinate")
+        # Center the progress bar by placing in middle column
+        self.progress.grid(row=8, column=1, **pad)
 
         self.log = tk.Text(self, width=100, height=16, state="disabled")
         self.log.grid(row=9, column=0, columnspan=3, padx=6, pady=(2, 8))
 
-        # Results table: show filename and a short text snippet
-        self.table = ttk.Treeview(self, columns=("File Name", "Snippet", "Notes"), show="headings", height=8)
-        for cid in ("File Name", "Snippet", "Notes"):
-            self.table.heading(cid, text=cid)
-            self.table.column(cid, width=220 if cid == "Snippet" else 180)
+        # Results table: reused to show final extracted fields (compact)
+        self.table = ttk.Treeview(self, columns=("File Name",), show="headings", height=10)
+        self.table.heading("File Name", text="File Name")
+        self.table.column("File Name", width=220)
         self.table.grid(row=10, column=0, columnspan=3, padx=6, pady=(0, 8), sticky="nsew")
         self.grid_rowconfigure(10, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -222,7 +252,10 @@ class App(tk.Tk):
         tesseract_path = self.tess_path_var.get().strip() or None
         poppler_path = self.poppler_var.get().strip() or None
 
-        err = validate_paths(in_folder, out_file)
+        # Only require input folder; final output will be saved during extraction step
+        err = None
+        if not in_folder:
+            err = "Please select an input folder."
         if err:
             messagebox.showerror("Error", err)
             return
@@ -243,7 +276,7 @@ class App(tk.Tk):
         # Clear results table
         for iid in self.table.get_children():
             self.table.delete(iid)
-        cols = ["File Name", "Text"]  # for file-level storage
+        cols = ["File Name", "Text"]  # in-memory only; not saved to disk
 
         rows: List[dict] = []
         self.progress.configure(maximum=len(pdfs))
@@ -268,11 +301,11 @@ class App(tk.Tk):
                     self.ocr_text_view.see("end")
                     self.update_idletasks()
                 full_text = ocr_pdf_to_text(
-                    pdf_path,
-                    tesseract_cmd=tesseract_path,
-                    poppler_path=poppler_path,
+                pdf_path,
+                tesseract_cmd=tesseract_path,
+                poppler_path=poppler_path,
                     on_page=on_page,
-                    log=lambda m: self._append_log(m),
+                log=lambda m: self._append_log(m),
                 )
             except Exception as exc:  # noqa: BLE001
                 full_text = ""
@@ -290,23 +323,11 @@ class App(tk.Tk):
             snippet = (full_text.strip().replace("\r", " ").replace("\n", " ")[:180] + ("..." if len(full_text) > 180 else "")) if full_text else ""
             self.table.insert("", "end", values=(pdf_path.name, snippet, ""))
             
-            # Real-time CSV update
-            try:
-                append_rows_csv([row], csv_file, columns=cols)
-                self._append_log(f"Updated CSV: {csv_file}")
-            except Exception as exc:
-                self._append_log(f"CSV update failed: {exc}")
-            
             self._append_log(f"Completed: {pdf_path.name}")
             self.update_idletasks()
 
-        try:
-            export_results(rows, out_file, columns=cols)
-            self._append_log(f"Saved results to {out_file}")
-            messagebox.showinfo("Done", "Extraction completed successfully.")
-            self.status_var.set("Done")
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Save Failed", f"Failed to save results: {exc}")
+        # Do not save OCR text to disk; keep in memory for extractor
+        self.status_var.set("OCR texts ready. Use 'Select Fields (First PDF)' then 'Final Extract'.")
 
         # Cache OCR rows for extractor step
         self._ocr_rows_cache = rows
@@ -325,6 +346,12 @@ class App(tk.Tk):
         dlg = tk.Toplevel(self)
         dlg.title("Extractor - Define Fields by Selection")
         dlg.geometry("900x600")
+        # Apply same icon to dialog
+        try:
+            if hasattr(self, "icon_img"):
+                dlg.iconphoto(True, self.icon_img)
+        except Exception:
+            pass
 
         # Left: list of files
         file_list = tk.Listbox(dlg, width=40, exportselection=False)
@@ -348,7 +375,7 @@ class App(tk.Tk):
         patterns_view = tk.Text(dlg, width=80, height=10)
         patterns_view.grid(row=2, column=2, columnspan=2, sticky="nsew", padx=6, pady=6)
 
-        field_to_patterns: Dict[str, List[str]] = {}
+        field_to_patterns: Dict[str, List[str]] = dict(self.field_to_patterns)
         last_sel = {"start": None, "end": None}
 
         def refresh_text(*_args: object) -> None:
@@ -428,37 +455,57 @@ class App(tk.Tk):
                 for p in v:
                     patterns_view.insert("end", f"  - {p}\n")
             patterns_view.see("end")
+            # Persist into main state so we can close the window after selection
+            self.field_to_patterns = dict(field_to_patterns)
 
         def run_extraction() -> None:
             if not field_to_patterns:
                 messagebox.showerror("Extract", "Add at least one field.")
                 return
-            results = bulk_extract(rows, field_to_patterns)
-            # Save CSV
-            out_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
-            if not out_path:
-                return
-            cols = ["File Name"] + list(field_to_patterns.keys())
-            try:
-                append_rows_csv(results, out_path, columns=cols)
-                messagebox.showinfo("Extract", f"Saved final CSV to: {out_path}")
-            except Exception as exc:
-                messagebox.showerror("Extract", f"Failed to save CSV: {exc}")
+            # Close after field selection; final extract happens from main window
+            messagebox.showinfo("Selection", "Fields captured. Now click 'Final Extract' in the main window.")
+            dlg.destroy()
 
-        def run_license_extraction() -> None:
-            results = bulk_extract_licenses(rows)
-            out_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
-            if not out_path:
-                return
-            cols = ["File Name", "Licenses"]
-            try:
-                append_rows_csv(results, out_path, columns=cols)
-                messagebox.showinfo("Extract", f"Saved licenses CSV to: {out_path}")
-            except Exception as exc:
-                messagebox.showerror("Extract", f"Failed to save CSV: {exc}")
+        tk.Button(dlg, text="Use Selection & Close", command=run_extraction).grid(row=3, column=3, sticky="e", padx=6, pady=6)
 
-        tk.Button(dlg, text="Run Extraction", command=run_extraction).grid(row=3, column=2, sticky="e", padx=6, pady=6)
-        tk.Button(dlg, text="Extract All Licenses (Type A/B)", command=run_license_extraction).grid(row=3, column=3, sticky="e", padx=6, pady=6)
+    def _final_extract(self) -> None:
+        # Use persisted OCR rows and field patterns to extract over all PDFs
+        rows: List[Dict[str, str]] = getattr(self, "_ocr_rows_cache", [])
+        if not rows:
+            messagebox.showerror("Final Extract", "Run 'Process All' first to OCR PDFs.")
+            return
+        if not self.field_to_patterns:
+            messagebox.showerror("Final Extract", "Use 'Select Fields (First PDF)' to define fields.")
+            return
+        out_path = self.out_file_var.get().strip()
+        if not out_path:
+            messagebox.showerror("Final Extract", "Please set 'Output File' before exporting.")
+            return
+        results = bulk_extract(rows, self.field_to_patterns)
+        lic_rows = bulk_extract_licenses(rows)
+        lic_map = {r.get("File Name", ""): r.get("Licenses", "") for r in lic_rows}
+        for r in results:
+            r["Licenses"] = lic_map.get(r.get("File Name", ""), "")
+        cols = ["File Name", "Licenses"] + list(self.field_to_patterns.keys())
+        filtered = []
+        for r in results:
+            has_data = (r.get("Licenses", "").strip() != "") or any((r.get(k, "").strip() != "") for k in self.field_to_patterns.keys())
+            if has_data:
+                filtered.append({c: r.get(c, "") for c in cols})
+        try:
+            export_results(filtered, out_path, columns=cols)
+            messagebox.showinfo("Final Extract", f"Saved final output to: {out_path}")
+            # Rebuild table to show final extracted fields compactly
+            for iid in self.table.get_children():
+                self.table.delete(iid)
+            self.table["columns"] = cols
+            for cid in cols:
+                self.table.heading(cid, text=cid)
+                self.table.column(cid, width=160 if cid != "File Name" else 220)
+            for r in filtered:
+                self.table.insert("", "end", values=[r.get(c, "") for c in cols])
+        except Exception as exc:
+            messagebox.showerror("Final Extract", f"Failed to save: {exc}")
 
 
 def main() -> None:
