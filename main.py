@@ -8,7 +8,7 @@ from typing import List, Optional
 import PySimpleGUI as sg  # type: ignore
 import pandas as pd  # type: ignore
 
-from ocr_utils import (
+from ocr import (
     ExtractionResult,
     collect_pdfs_in_folder,
     process_pdf_file,
@@ -16,6 +16,7 @@ from ocr_utils import (
 
 
 APP_TITLE = "OCR PDF Extractor"
+SPLASH_TITLE = "OCR System"
 
 def resource_path(relative_path: str) -> str:
     """
@@ -26,6 +27,37 @@ def resource_path(relative_path: str) -> str:
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def bundled_poppler_path() -> str:
+    """
+    Return bundled poppler bin path when frozen; else guess empty.
+    Looks for 'poppler-25.07.0/Library/bin' or 'poppler/Library/bin' relative to bundle.
+    """
+    candidates = [
+        resource_path(os.path.join("poppler-25.07.0", "Library", "bin")),
+        resource_path(os.path.join("poppler", "Library", "bin")),
+        resource_path(os.path.join("poppler-25.07.0", "bin")),
+        resource_path(os.path.join("poppler", "bin")),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    # Fallback: try relative to exe directory for portable sharing
+    try:
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        relative_candidates = [
+            os.path.join(exe_dir, "poppler-25.07.0", "Library", "bin"),
+            os.path.join(exe_dir, "poppler", "Library", "bin"),
+            os.path.join(exe_dir, "poppler-25.07.0", "bin"),
+            os.path.join(exe_dir, "poppler", "bin"),
+        ]
+        for c in relative_candidates:
+            if os.path.isdir(c):
+                return c
+    except Exception:
+        pass
+    return ""
 
 
 def guess_tesseract_path() -> str:
@@ -77,13 +109,13 @@ def guess_poppler_bin() -> str:
 
 def build_layout() -> List[List[sg.Element]]:
     default_tess = guess_tesseract_path()
-    default_poppler = guess_poppler_bin()
+    default_poppler = bundled_poppler_path() or guess_poppler_bin()
     input_section = [
         [sg.Text("Input Folder (PDFs):", size=(20, 1)), sg.Input(key="-IN_FOLDER-"), sg.FolderBrowse("Browse")],
         [sg.Text("Output File (CSV/XLSX):", size=(20, 1)), sg.Input(key="-OUT_FILE-"), sg.SaveAs("Save As", file_types=(
             ("CSV", "*.csv"), ("Excel", "*.xlsx")), default_extension=".csv")],
         [sg.Text("Tesseract Path:", size=(20, 1)), sg.Input(key="-TESS_PATH-", default_text=default_tess), sg.FileBrowse("Browse")],
-        [sg.Text("Poppler bin Folder:", size=(20, 1)), sg.Input(key="-POPPLER_PATH-", default_text=default_poppler), sg.FolderBrowse("Browse")],
+        [sg.Text("Poppler bin Folder:", size=(20, 1)), sg.Input(key="-POPPLER_PATH-", default_text=default_poppler, disabled=True), sg.Text("(Auto-detected)", size=(15, 1))],
     ]
 
     actions_section = [
@@ -129,11 +161,14 @@ def export_results(results: List[ExtractionResult], out_file: str) -> None:
             "License ID": r.license_id or "",
             "Date": r.date or "",
             "Reference ID": r.reference_id or "",
+            "Address": getattr(r, "address", "") or "",
+            "Start Date": getattr(r, "start_date", "") or "",
+            "End Date": getattr(r, "end_date", "") or "",
             "Notes": r.notes or "",
         }
         for r in results
     ]
-    df = pd.DataFrame(rows, columns=["File Name", "License ID", "Date", "Reference ID", "Notes"])
+    df = pd.DataFrame(rows, columns=["File Name", "License ID", "Date", "Reference ID", "Address", "Start Date", "End Date", "Notes"])
 
     if out_file.lower().endswith(".csv"):
         df.to_csv(out_file, index=False, encoding="utf-8")
@@ -143,11 +178,26 @@ def export_results(results: List[ExtractionResult], out_file: str) -> None:
 
 
 def main() -> None:
-    # Guard for PySimpleGUI v4/v5 differences
+    # Splash screen while importing backends or first-run startup
     if hasattr(sg, "theme"):
         sg.theme("SystemDefault")
+    splash_layout = [
+        [sg.Text(SPLASH_TITLE, font=("Segoe UI", 20))],
+        [sg.Image(filename=None, key="-SPLASH_IMG-")],
+        [sg.Text("Loading, please wait...")],
+        [sg.ProgressBar(max_value=100, orientation="h", size=(40, 20), key="-PB-")],
+    ]
+    splash = sg.Window("Starting...", splash_layout, no_titlebar=True, finalize=True, keep_on_top=True)
+    try:
+        # Optionally load an embedded/logo image in future via resource_path
+        for i in range(0, 101, 10):
+            splash["-PB-"].update(i)
+            sg.sleep(50)
+    finally:
+        splash.close()
+
     layout = build_layout()
-    window = sg.Window(APP_TITLE, layout, finalize=True)
+    window = sg.Window(APP_TITLE, layout, finalize=True, icon=resource_path("newicon.ico"))
 
     while True:
         event, values = window.read()
