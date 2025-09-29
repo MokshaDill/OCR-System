@@ -19,11 +19,13 @@ from ocr_utils import (
     bulk_extract,
     generate_window_patterns,
     bulk_extract_licenses,
+    extract_address_between_markers,
+    extract_date_range,
 )
 """Tkinter GUI for OCR PDF Extractor (regex-only version)."""
 
 
-APP_TITLE = "OCR PDF Extractor (Tkinter)"
+APP_TITLE = "EPL - OCR PDF Extractor"
 
 
 def resource_path(relative_path: str) -> str:
@@ -32,6 +34,33 @@ def resource_path(relative_path: str) -> str:
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def bundled_poppler_path() -> str:
+    candidates = [
+        resource_path(os.path.join("poppler-25.07.0", "Library", "bin")),
+        resource_path(os.path.join("poppler", "Library", "bin")),
+        resource_path(os.path.join("poppler-25.07.0", "bin")),
+        resource_path(os.path.join("poppler", "bin")),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    # Fallback: try relative to exe directory for portable sharing
+    try:
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        relative_candidates = [
+            os.path.join(exe_dir, "poppler-25.07.0", "Library", "bin"),
+            os.path.join(exe_dir, "poppler", "Library", "bin"),
+            os.path.join(exe_dir, "poppler-25.07.0", "bin"),
+            os.path.join(exe_dir, "poppler", "bin"),
+        ]
+        for c in relative_candidates:
+            if os.path.isdir(c):
+                return c
+    except Exception:
+        pass
+    return ""
 
 
 def guess_tesseract_path() -> str:
@@ -52,19 +81,10 @@ def guess_poppler_bin() -> str:
     env = os.environ.get("POPPLER_BIN", "")
     if env and os.path.isdir(env):
         return env
-    # Check bundled poppler within app resources for packaged .exe
-    try:
-        bundled = resource_path(os.path.join("poppler-25.07.0", "Library", "bin"))
-        if os.path.isdir(bundled):
-            return bundled
-        bundled2 = resource_path(os.path.join("poppler", "Library", "bin"))
-        if os.path.isdir(bundled2):
-            return bundled2
-        bundled3 = resource_path(os.path.join("poppler-25.07.0", "bin"))
-        if os.path.isdir(bundled3):
-            return bundled3
-    except Exception:
-        pass
+    # Prefer bundled poppler when present
+    p = bundled_poppler_path()
+    if p:
+        return p
     base_candidates = [r"C:\\Tools", r"C:\\Program Files"]
     for base in base_candidates:
         if not os.path.isdir(base):
@@ -114,12 +134,18 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        # Set window icon from PNG (resource-aware). Fallback silently if missing.
+        # Set window icon from ICO (resource-aware). Fallback silently if missing.
         try:
-            icon_path = resource_path("8005785.png")
-            if os.path.isfile(icon_path):
-                self.icon_img = tk.PhotoImage(file=icon_path)
-                self.iconphoto(True, self.icon_img)
+            icon_path_ico = resource_path("newicon.ico")
+            if os.path.isfile(icon_path_ico):
+                self.iconbitmap(default=icon_path_ico)
+        except Exception:
+            pass
+        # Also set app user model id for correct taskbar icon grouping on Windows
+        try:
+            import ctypes  # type: ignore
+            myappid = u"OCRSystem.App"  # arbitrary string
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -178,8 +204,8 @@ class App(tk.Tk):
         tk.Button(self, text="Browse", command=self._choose_tesseract).grid(row=2, column=2, **pad)
 
         tk.Label(self, text="Poppler bin Folder:", width=22, anchor="w").grid(row=3, column=0, **pad)
-        tk.Entry(self, textvariable=self.poppler_var, width=60).grid(row=3, column=1, **pad)
-        tk.Button(self, text="Browse", command=self._choose_poppler).grid(row=3, column=2, **pad)
+        tk.Entry(self, textvariable=self.poppler_var, width=60, state="readonly").grid(row=3, column=1, **pad)
+        tk.Label(self, text="(Auto-detected)", anchor="w").grid(row=3, column=2, **pad)
 
         # Extraction method removed; regex is always used
 
@@ -474,22 +500,36 @@ class App(tk.Tk):
         if not rows:
             messagebox.showerror("Final Extract", "Run 'Process All' first to OCR PDFs.")
             return
-        if not self.field_to_patterns:
-            messagebox.showerror("Final Extract", "Use 'Select Fields (First PDF)' to define fields.")
-            return
         out_path = self.out_file_var.get().strip()
         if not out_path:
             messagebox.showerror("Final Extract", "Please set 'Output File' before exporting.")
             return
-        results = bulk_extract(rows, self.field_to_patterns)
+        # User-defined pattern extraction (optional)
+        user_patterns = dict(self.field_to_patterns)
+        results = bulk_extract(rows, user_patterns) if user_patterns else [{"File Name": r.get("File Name", "")} for r in rows]
         lic_rows = bulk_extract_licenses(rows)
         lic_map = {r.get("File Name", ""): r.get("Licenses", "") for r in lic_rows}
+        # Auto extract address and date range
         for r in results:
             r["Licenses"] = lic_map.get(r.get("File Name", ""), "")
-        cols = ["File Name", "Licenses"] + list(self.field_to_patterns.keys())
+            full_text = next((x.get("Text", "") for x in rows if x.get("File Name") == r.get("File Name")), "")
+            addr = extract_address_between_markers(full_text) or ""
+            start_date, end_date = extract_date_range(full_text)
+            r["Address"] = addr
+            r["Start Date"] = start_date or ""
+            r["End Date"] = end_date or ""
+        # Build columns: base + auto + optional user-defined
+        base_cols = ["File Name", "Licenses", "Address", "Start Date", "End Date"]
+        cols = base_cols + list(user_patterns.keys())
         filtered = []
         for r in results:
-            has_data = (r.get("Licenses", "").strip() != "") or any((r.get(k, "").strip() != "") for k in self.field_to_patterns.keys())
+            has_data = (
+                r.get("Licenses", "").strip() != ""
+                or r.get("Address", "").strip() != ""
+                or r.get("Start Date", "").strip() != ""
+                or r.get("End Date", "").strip() != ""
+                or any((r.get(k, "").strip() != "") for k in user_patterns.keys())
+            )
             if has_data:
                 filtered.append({c: r.get(c, "") for c in cols})
         try:
