@@ -11,6 +11,7 @@ from .extract import (
     extract_date_range,
 )
 from .pipeline import process_pdf_file, ocr_pdf_to_text
+from .postprocess import postprocess_results
 from .csv_utils import append_rows_csv
 from .dynamic import (
     generate_smart_patterns,
@@ -37,6 +38,7 @@ __all__ = [
     "extract_date_range",
     "process_pdf_file",
     "ocr_pdf_to_text",
+    "postprocess_results",
     "append_rows_csv",
     "generate_smart_patterns",
     "extract_dynamic_fields",

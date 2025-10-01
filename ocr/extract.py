@@ -37,54 +37,80 @@ def extract_fields(
     return license_id, date, reference_id
 
 
+import re
+from typing import Optional
+
 def extract_address_between_markers(text: str) -> Optional[str]:
     """
-    Capture address-like text between 'Telecommunication Tower at' and 'of Dialog Axiata PLC'.
-    - Allow arbitrary dots/spaces/newlines
-    - Trim leading/trailing punctuation
+    Extract address associated with 'Telecommunication tower' references.
+    Handles variants like:
+      - 'Telecommunication Tower at ... of Dialog Axiata PLC'
+      - 'Telecommunication tower (BD-0001) of ...'
+      - '(Telecommunication tower), ... situated ...'
     """
     if not text:
         return None
-    # Make tolerant to OCR noise: collapse whitespace and dots sequences
-    t = re.sub(r"[\u200b\r]+", " ", text)
-    # Regex across newlines, non-greedy between markers
-    rgx = re.compile(
-        r"Telecommunication\s+Tower\s+at\s+[\"“”']?(.*?)[\"“”']?\s+of\s+Dialog[\s\w\(\)\.]*",
-        flags=re.IGNORECASE | re.DOTALL,
+
+    t = re.sub(r"[\u200b\r]+", " ", text)  # Remove zero-width chars and carriage returns
+
+    pattern = re.compile(
+        r"""
+        Telecommunication\s+(?:Tower|tower)       # Match Tower / tower
+        (?:\s*\([^)]*\))?                         # Optional code in parentheses
+        (?:\s+at\s+|\s*,\s*|\s+)?                 # Optional 'at' or comma
+        (.*?)                                     # Capture the address
+        (?=                                       # Lookahead to stop at keywords
+            \s+of\s+Dialog|
+            \s*situated|
+            \s*within|
+            $                                       # Or end of string
+        )
+        """,
+        flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
     )
 
-    m = rgx.search(t)
-    if not m:
-        return None
-    addr = m.group(1)
-    # Cleanup: remove excessive dots/spaces and leading 'No.' variants spacing
-    addr = re.sub(r"\s*\.\s*", ". ", addr)
-    addr = re.sub(r"\s{2,}", " ", addr).strip(" ,.;:-")
-    return addr.strip()
+    match = pattern.search(t)
+    if match:
+        addr = match.group(1)
+        # Cleanup multiple spaces, trailing punctuation
+        addr = re.sub(r"\s{2,}", " ", addr)
+        addr = addr.strip(" ,.;:-")
+        return addr
+
+    return None
 
 
 def extract_date_range(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Find date ranges like '1 .12.2024 to 24.11.2025' allowing noisy dots/spaces.
+    Find date ranges like '1.12.2024 to 24.11.2025' or '12-02-2025 to 23-11-2026',
+    allowing noisy dots/spaces/hyphens.
     Returns (start_date, end_date) normalized with single dots (d.m.yyyy).
     """
     if not text:
         return None, None
+
     t = re.sub(r"[\u200b\r]+", " ", text)
-    # day and month may contain optional spaces/dots inside
+    # day and month may contain optional spaces and optional dot or hyphen
     day = r"\d{1,2}"
     mon = r"\d{1,2}"
     year = r"\d{4}"
-    dot = r"\s*\.\s*"
-    date_pat = rf"{day}{dot}{mon}{dot}{year}"
-    rgx = re.compile(rf"({date_pat}).{{0,40}}?\bto\b.{{0,40}}?({date_pat})", re.IGNORECASE | re.DOTALL)
+    sep = r"\s*[\.\-]\s*"     # <-- allow . or - between day/month/year
+    date_pat = rf"{day}{sep}{mon}{sep}{year}"
+
+    rgx = re.compile(
+        rf"({date_pat}).{{0,40}}?\bto\b.{{0,40}}?({date_pat})",
+        re.IGNORECASE | re.DOTALL
+    )
+
     m = rgx.search(t)
     if not m:
         return None, None
+
     def _norm(s: str) -> str:
-        s = re.sub(r"\s*\.\s*", ".", s)
+        s = re.sub(r"\s*[\.\-]\s*", ".", s)  # normalize both . and - into .
         s = re.sub(r"\s+", "", s)
         return s
+
     return _norm(m.group(1)), _norm(m.group(2))
 
 

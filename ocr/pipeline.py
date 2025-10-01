@@ -36,7 +36,8 @@ def ocr_pdf_to_text(
                 on_page(page_text, idx, total)
             except Exception:
                 pass
-    return "\n".join(all_text_parts)
+    # Insert explicit page separators to enable first-page-only downstream logic
+    return "\n\n--- PAGE BREAK ---\n\n".join(all_text_parts)
 
 
 def process_pdf_file(

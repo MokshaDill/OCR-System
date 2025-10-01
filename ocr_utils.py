@@ -28,6 +28,7 @@ from ocr import (
     collect_pdfs_in_folder,
 )
 from ocr import append_rows_csv
+from ocr import postprocess_results
 from ocr import (
     generate_smart_patterns,
     extract_dynamic_fields,
@@ -54,6 +55,7 @@ __all__ = [
     "process_pdf_file",
     "collect_pdfs_in_folder",
     "append_rows_csv",
+    "postprocess_results",
     "generate_smart_patterns",
     "extract_dynamic_fields",
     "generate_window_patterns",
@@ -64,4 +66,5 @@ __all__ = [
     "bulk_extract_licenses",
     "extract_address_between_markers",
     "extract_date_range",
+    
 ]

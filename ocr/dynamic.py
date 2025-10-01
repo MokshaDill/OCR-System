@@ -176,7 +176,11 @@ def bulk_extract_licenses(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     for r in rows:
         text = r.get("Text", "") or ""
-        licenses = extract_all_license_numbers(text)
+        # Restrict to first page only: split by explicit page separator if present
+        first_page_text = text.split("--- PAGE BREAK ---", 1)[0] if text else ""
+        licenses_all = extract_all_license_numbers(first_page_text)
+        # Choose only one license (first match) to meet requirement
+        licenses = licenses_all[:1]
         out.append({
             "File Name": r.get("File Name", ""),
             "Licenses": "; ".join(licenses),
