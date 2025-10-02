@@ -42,28 +42,28 @@ from typing import Optional
 
 def extract_address_between_markers(text: str) -> Optional[str]:
     """
-    Extract address associated with 'Telecommunication tower' references.
+    Extract address associated with telecommunication tower references.
     Handles variants like:
       - 'Telecommunication Tower at ... of Dialog Axiata PLC'
-      - 'Telecommunication tower (BD-0001) of ...'
+      - 'Transmission Tower Providing Facilities for Telecommunication at ... situated ...'
       - '(Telecommunication tower), ... situated ...'
     """
     if not text:
         return None
 
-    t = re.sub(r"[\u200b\r]+", " ", text)  # Remove zero-width chars and carriage returns
+    t = re.sub(r"[\u200b\r]+", " ", text)
 
     pattern = re.compile(
         r"""
-        Telecommunication\s+(?:Tower|tower)       # Match Tower / tower
-        (?:\s*\([^)]*\))?                         # Optional code in parentheses
-        (?:\s+at\s+|\s*,\s*|\s+)?                 # Optional 'at' or comma
-        (.*?)                                     # Capture the address
-        (?=                                       # Lookahead to stop at keywords
+        (?:Telecommunication|Transmission)[\w\s,()/-]*?          # tower-related phrase
+        \s+at\s+                                                # 'at' introducing address
+        (.*?)                                                   # <-- capture address text
+        (?=                                                     # stop capturing at these keywords
             \s+of\s+Dialog|
             \s*situated|
             \s*within|
-            $                                       # Or end of string
+            \s*under|
+            $                                                  # or end of string
         )
         """,
         flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
@@ -72,7 +72,6 @@ def extract_address_between_markers(text: str) -> Optional[str]:
     match = pattern.search(t)
     if match:
         addr = match.group(1)
-        # Cleanup multiple spaces, trailing punctuation
         addr = re.sub(r"\s{2,}", " ", addr)
         addr = addr.strip(" ,.;:-")
         return addr
