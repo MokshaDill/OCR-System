@@ -117,7 +117,10 @@ def infer_token_shape(sample_text: str) -> str:
     return rf"{cls}{{{min_len},{max_len}}}"
 
 
-LICENSE_TYPE_A = r"\b[A-Z]{1,5}[ \-/]*\d{1,10}[ \t]*\(\s*[A-Z0-9/\-\s]{1,24}\s*\)"
+LICENSE_TYPE_A = (
+    r"\b(?:[A-Z]{1,5}|No)\.?\s*\d{1,10}\s*"
+    r"\(\s*[Rr][ \t/_\\\-:;]*[A-Za-z0-9\u2080-\u2089;:/\-]{1,8}\s*\)"
+)
 LICENSE_TYPE_B = r"\b\d{1,6}/\d{1,6}\s*R\d+\b"
 
 

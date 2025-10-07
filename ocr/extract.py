@@ -42,28 +42,28 @@ from typing import Optional
 
 def extract_address_between_markers(text: str) -> Optional[str]:
     """
-    Extract address associated with 'Telecommunication tower' references.
+    Extract address associated with telecommunication tower references.
     Handles variants like:
       - 'Telecommunication Tower at ... of Dialog Axiata PLC'
-      - 'Telecommunication tower (BD-0001) of ...'
+      - 'Transmission Tower Providing Facilities for Telecommunication at ... situated ...'
       - '(Telecommunication tower), ... situated ...'
     """
     if not text:
         return None
 
-    t = re.sub(r"[\u200b\r]+", " ", text)  # Remove zero-width chars and carriage returns
+    t = re.sub(r"[\u200b\r]+", " ", text)
 
     pattern = re.compile(
         r"""
-        Telecommunication\s+(?:Tower|tower)       # Match Tower / tower
-        (?:\s*\([^)]*\))?                         # Optional code in parentheses
-        (?:\s+at\s+|\s*,\s*|\s+)?                 # Optional 'at' or comma
-        (.*?)                                     # Capture the address
-        (?=                                       # Lookahead to stop at keywords
+        (?:Telecommunication|Transmission)[\w\s,()/-]*?          # tower-related phrase
+        \s+at\s+                                                # 'at' introducing address
+        (.*?)                                                   # <-- capture address text
+        (?=                                                     # stop capturing at these keywords
             \s+of\s+Dialog|
             \s*situated|
             \s*within|
-            $                                       # Or end of string
+            \s*under|
+            $                                                  # or end of string
         )
         """,
         flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
@@ -72,7 +72,6 @@ def extract_address_between_markers(text: str) -> Optional[str]:
     match = pattern.search(t)
     if match:
         addr = match.group(1)
-        # Cleanup multiple spaces, trailing punctuation
         addr = re.sub(r"\s{2,}", " ", addr)
         addr = addr.strip(" ,.;:-")
         return addr
@@ -80,23 +79,43 @@ def extract_address_between_markers(text: str) -> Optional[str]:
     return None
 
 
+import re
+from typing import Tuple, Optional
+
+import re
+from typing import Tuple, Optional
+
 def extract_date_range(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Find date ranges like '1.12.2024 to 24.11.2025' or '12-02-2025 to 23-11-2026',
-    allowing noisy dots/spaces/hyphens.
-    Returns (start_date, end_date) normalized with single dots (d.m.yyyy).
+    Extract date ranges from text, handling:
+    - Numeric: 12.02.2025 or 21-32-2024 (even if invalid month/day)
+    - Textual: 10th May 2025
+    - OCR variant: 15" May 2025
+    Returns normalized numeric format: d.m.yyyy
     """
     if not text:
         return None, None
 
     t = re.sub(r"[\u200b\r]+", " ", text)
-    # day and month may contain optional spaces and optional dot or hyphen
+
+    # --- Numeric date pattern ---
     day = r"\d{1,2}"
     mon = r"\d{1,2}"
     year = r"\d{4}"
-    sep = r"\s*[\.\-]\s*"     # <-- allow . or - between day/month/year
-    date_pat = rf"{day}{sep}{mon}{sep}{year}"
+    sep = r"\s*[\.\-]\s*" 
+    numeric_date = rf"{day}{sep}{mon}{sep}{year}"
 
+    # --- Textual date pattern (ordinal or OCR double-quote) ---
+    day_suffix = r'(?:st|nd|rd|th|"|”)?'  # handle OCR quotes or ordinal
+    day_text = rf"\d{{1,2}}{day_suffix}"
+    month_text = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|" \
+                 r"January|February|March|April|May|June|July|August|September|October|November|December)"
+    textual_date = rf"{day_text}\s*{month_text}\s+{year}"
+
+    # Combine patterns
+    date_pat = rf"(?:{numeric_date}|{textual_date})"
+
+    # Match "date to date"
     rgx = re.compile(
         rf"({date_pat}).{{0,40}}?\bto\b.{{0,40}}?({date_pat})",
         re.IGNORECASE | re.DOTALL
@@ -106,11 +125,25 @@ def extract_date_range(text: str) -> Tuple[Optional[str], Optional[str]]:
     if not m:
         return None, None
 
-    def _norm(s: str) -> str:
-        s = re.sub(r"\s*[\.\-]\s*", ".", s)  # normalize both . and - into .
-        s = re.sub(r"\s+", "", s)
+    def _normalize_date(s: str) -> str:
+        # Remove ordinal suffixes or OCR quotes
+        s = re.sub(r'(\d{1,2})(st|nd|rd|th|"|”)', r'\1', s, flags=re.IGNORECASE)
+        # Convert textual month to number
+        month_map = {
+            'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
+            'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12
+        }
+        def replace_month(mo):
+            m = mo.group(0).lower()[:3]
+            return str(month_map[m])
+        s = re.sub(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|'
+                   r'January|February|March|April|May|June|July|August|September|October|November|December)',
+                   replace_month, s, flags=re.IGNORECASE)
+        # Replace separators/spaces with dot
+        s = re.sub(r"[\s\.\-]+", ".", s)
         return s
 
-    return _norm(m.group(1)), _norm(m.group(2))
+    start, end = _normalize_date(m.group(1)), _normalize_date(m.group(2))
 
+    return start, end
 
